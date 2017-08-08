@@ -11,7 +11,7 @@ import numpy as np
 input_vocab_size = 20
 output_vocab_size = 100
 input_embedding_size = 20
-output_embedding_size = 100
+output_embedding_size = 50
 numberArticles = 2
 #Inputs
 
@@ -22,7 +22,7 @@ decoder_targets = tf.placeholder(shape=(None, None), dtype=tf.int32, name='decod
 lengthOfArticles= tf.placeholder(shape=(None,), dtype=tf.int32, name='l')
 #Embeddings
 input_embeddings = tf.Variable(tf.random_uniform([input_vocab_size, input_embedding_size], -1.0, 1.0), dtype=tf.float32)
-output_embeddings = tf.Variable(tf.random_uniform([output_embedding_size, output_vocab_size], -1.0, 1.0), dtype=tf.float32)
+output_embeddings = tf.Variable(tf.random_uniform([output_vocab_size, output_embedding_size], -1.0, 1.0), dtype=tf.float32)
 
 #Network
 encoder_inputs_embedded = tf.nn.embedding_lookup(input_embeddings, encoder_inputs, name="input_embedding_vector")
@@ -96,18 +96,18 @@ helper_train = tf_decode_helper.TrainingHelper(
 # print(decoder_initial_state)
 dstate = eout.final_state
 
-encoder_final_state_c = tf.add(tf.multiply(dstate[0].c, .5), tf.multiply(dstate[1].c, .5))
-encoder_final_state_h = tf.add(tf.multiply(dstate[0].h, .5), tf.multiply(dstate[1].h, .5))
+# encoder_final_state_c = tf.add(tf.multiply(dstate[0].c, .5), tf.multiply(dstate[1].c, .5))
+# encoder_final_state_h = tf.add(tf.multiply(dstate[0].h, .5), tf.multiply(dstate[1].h, .5))
 
 summed_encoder_final_state_c = tf.add(tf.multiply(sumUp(dstate[0].c, 4), .5), tf.multiply(sumUp(dstate[1].c, 4), .5))
 summed_encoder_final_state_h = tf.add(tf.multiply(sumUp(dstate[0].h, 4), .5), tf.multiply(sumUp(dstate[1].h, 4), .5))
 # encoder_final_state_h = tf.concat(
 #     (dstate[0].h, dstate[1].h), 1)
 #
-encoder_final_state = LSTMStateTuple(
-    c=encoder_final_state_c,
-    h=encoder_final_state_h
-)
+# encoder_final_state = LSTMStateTuple(
+#     c=encoder_final_state_c,
+#     h=encoder_final_state_h
+# )
 summed_encoder_final_state = LSTMStateTuple(
     c=summed_encoder_final_state_c,
     h=summed_encoder_final_state_h
