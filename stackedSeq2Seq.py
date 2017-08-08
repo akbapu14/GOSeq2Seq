@@ -4,8 +4,11 @@ from seq2seq.encoders import rnn_encoder
 from seq2seq.decoders import attention_decoder
 from seq2seq.decoders import basic_decoder
 from seq2seq.decoders import attention
+from seq2seq.contrib.seq2seq.decoder import _transpose_batch_time
 from seq2seq.contrib.seq2seq import helper as tf_decode_helper
 from tensorflow.contrib.rnn import LSTMStateTuple
+import collections
+from seq2seq.models.model_base import ModelBase, _flatten_dict
 import numpy as np
 #Parameters
 input_vocab_size = 20
@@ -62,13 +65,7 @@ summedAttention = sumUp(eout.attention_values, 4)
 summedLengths = eout.attention_values_length[:1]
 summedOutputs = sumUp(eout.outputs, 4)
 
-# ***
-# decoder = attention_decoder.AttentionDecoder(params={}, mode=pmode,
-# vocab_size=output_vocab_size,
-# attention_values=eout.attention_values,
-# attention_values_length=eout.attention_values_length,
-# attention_keys=eout.outputs,
-# attention_fn=attention.AttentionLayerBahdanau(params={}, mode=pmode))
+
 
 decoder = attention_decoder.AttentionDecoder(params={}, mode=pmode,
 vocab_size=output_vocab_size,
@@ -76,48 +73,63 @@ attention_values=summedAttention,
 attention_values_length=summedLengths,
 attention_keys=summedOutputs,
 attention_fn=attention.AttentionLayerBahdanau(params={}, mode=pmode))
-# decoder = basic_decoder.BasicDecoder(params={}, mode=tf.contrib.learn.ModeKeys.TRAIN, vocab_size=output_vocab_size)
 
-
-
-# bridge = bridges.InitialStateBridge(encoder_outputs=eout,
-# decoder_state_size=128,
-# params={},
-# mode=tf.contrib.learn.ModeKeys.TRAIN)
-batch_size = numberArticles
+batch_size = 2
 target_start_id = 1
 helper_infer = tf_decode_helper.GreedyEmbeddingHelper(
     embedding=output_embeddings,
     start_tokens=tf.fill([batch_size], target_start_id),
     end_token=5)
-# helper_train = tf_decode_helper.TrainingHelper(
-#         inputs=decoder_targets_embedded[:, :-1],
-#         sequence_length=decoder_targets_length - 1)
-# decoder_initial_state = bridge()
-# print(decoder_initial_state)
+helper_train = tf_decode_helper.TrainingHelper(
+        inputs=decoder_targets_embedded[:, :-1],
+        sequence_length=decoder_targets_length - 1)
 dstate = eout.final_state
 
+# ***
+# decoder = attention_decoder.AttentionDecoder(params={}, mode=pmode,
+# vocab_size=output_vocab_size,
+# attention_values=eout.attention_values,
+# attention_values_length=eout.attention_values_length,
+# attention_keys=eout.outputs,
+# attention_fn=attention.AttentionLayerBahdanau(params={}, mode=pmode))
 # encoder_final_state_c = tf.add(tf.multiply(dstate[0].c, .5), tf.multiply(dstate[1].c, .5))
 # encoder_final_state_h = tf.add(tf.multiply(dstate[0].h, .5), tf.multiply(dstate[1].h, .5))
-
-summed_encoder_final_state_c = tf.add(tf.multiply(sumUp(dstate[0].c, 4), .5), tf.multiply(sumUp(dstate[1].c, 4), .5))
-summed_encoder_final_state_h = tf.add(tf.multiply(sumUp(dstate[0].h, 4), .5), tf.multiply(sumUp(dstate[1].h, 4), .5))
-# encoder_final_state_h = tf.concat(
-#     (dstate[0].h, dstate[1].h), 1)
-#
 # encoder_final_state = LSTMStateTuple(
 #     c=encoder_final_state_c,
 #     h=encoder_final_state_h
 # )
+
+
+summed_encoder_final_state_c = tf.add(tf.multiply(sumUp(dstate[0].c, 4), .5), tf.multiply(sumUp(dstate[1].c, 4), .5))
+summed_encoder_final_state_h = tf.add(tf.multiply(sumUp(dstate[0].h, 4), .5), tf.multiply(sumUp(dstate[1].h, 4), .5))
 summed_encoder_final_state = LSTMStateTuple(
     c=summed_encoder_final_state_c,
     h=summed_encoder_final_state_h
 )
-# dstate2 = eout2.final_state
+
 # summed_encoder_final_state = tf.Print(summed_encoder_final_state, [1.0, 3.0], message="On to decoding")
 
-dout, _, = decoder(summed_encoder_final_state, helper_infer)
+decoder_output, _, = decoder(summed_encoder_final_state, helper_infer)
+predictions = {}
+# Decoders returns output in time-major form [T, B, ...]
+# Here we transpose everything back to batch-major for the user
+output_dict = collections.OrderedDict(
+    zip(decoder_output._fields, decoder_output))
+decoder_output_flat = _flatten_dict(output_dict)
+decoder_output_flat = {
+    k: _transpose_batch_time(v)
+    for k, v in decoder_output_flat.items()
+}
+predictions.update(decoder_output_flat)
 
+# If we predict the ids also map them back into the vocab and process them
+# if "predicted_ids" in predictions.keys():
+#   vocab_tables = graph_utils.get_dict_from_collection("vocab_tables")
+#   target_id_to_vocab = vocab_tables["target_id_to_vocab"]
+#   predicted_tokens = target_id_to_vocab.lookup(
+#       tf.to_int64(predictions["predicted_ids"]))
+#   # Raw predicted tokens
+#   predictions["predicted_tokens"] = predicted_tokens
 
 sess = tf.Session()
 init_op = tf.global_variables_initializer()
@@ -125,12 +137,17 @@ init_l = tf.local_variables_initializer()
 sess.run(init_op)
 sess.run(init_l)
 
-testArray = [[0,0,0,0,0], [1,2,3,4,5], [1,2,3,4,5], [1,2,3,4,5]]
+testArray = [[1,2,3,4,5], [1,2,3,4,5], [1,2,3,4,5], [1,2,3,4,5]]
 # valArray = [[6,5,4,3,2],[6,5,4,3,2]]
 endArray = [[1,2,3,4,0], [1,2,3,4,0], [1,2,3,4,0], [0,0,0,0,0]]
 
-d = sess.run(dout, {encoder_inputs: testArray, encoder_inputs_length: [5,5,5,5], lengthOfArticles: [2,2]})
+d = sess.run(predictions, {encoder_inputs: testArray, encoder_inputs_length: [5,5,5,5], lengthOfArticles: [2,2]})
 
+# bridge = bridges.InitialStateBridge(encoder_outputs=eout,
+# decoder_state_size=128,
+# params={},
+# mode=tf.contrib.learn.ModeKeys.TRAIN)
+# decoder_initial_state = bridge()
 
 # dout = decoder.decode(eout.outputs, encoder_inputs_embedded, decoder_targets)
 # encoder_logits = tf.contrib.layers.linear(outputs, output_embedding_size)
