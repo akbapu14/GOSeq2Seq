@@ -14,12 +14,13 @@ input_embedding_size = 20
 output_embedding_size = 50
 numberArticles = 2
 #Inputs
-
+pmode = tf.contrib.learn.ModeKeys.INFER
 encoder_inputs = tf.placeholder(shape=(None, None), dtype=tf.int32, name='encoder_inputs')
 encoder_inputs_length = tf.placeholder(shape=(None,), dtype=tf.int32, name='encoder_inputs_length')
 decoder_targets_length = tf.placeholder(shape=(None,), dtype=tf.int32, name='decoder_lengths')
 decoder_targets = tf.placeholder(shape=(None, None), dtype=tf.int32, name='decoder_targets')
 lengthOfArticles= tf.placeholder(shape=(None,), dtype=tf.int32, name='l')
+
 #Embeddings
 input_embeddings = tf.Variable(tf.random_uniform([input_vocab_size, input_embedding_size], -1.0, 1.0), dtype=tf.float32)
 output_embeddings = tf.Variable(tf.random_uniform([output_vocab_size, output_embedding_size], -1.0, 1.0), dtype=tf.float32)
@@ -28,7 +29,7 @@ output_embeddings = tf.Variable(tf.random_uniform([output_vocab_size, output_emb
 encoder_inputs_embedded = tf.nn.embedding_lookup(input_embeddings, encoder_inputs, name="input_embedding_vector")
 decoder_targets_embedded = tf.nn.embedding_lookup(output_embeddings, decoder_targets, name="decoder_embedding_vector")
 
-encoder = rnn_encoder.BidirectionalRNNEncoder(params={}, mode=tf.contrib.learn.ModeKeys.TRAIN)
+encoder = rnn_encoder.BidirectionalRNNEncoder(params={}, mode=pmode)
 
 eout = encoder.encode(encoder_inputs_embedded, encoder_inputs_length)
 # eout2 = encoder.encode(tf.nn.embedding_lookup(input_embeddings, article_inputs[1]), encoder_inputs_length)
@@ -61,20 +62,20 @@ summedAttention = sumUp(eout.attention_values, 4)
 summedLengths = eout.attention_values_length[:1]
 summedOutputs = sumUp(eout.outputs, 4)
 
+# ***
+decoder = attention_decoder.AttentionDecoder(params={}, mode=pmode,
+vocab_size=output_vocab_size,
+attention_values=eout.attention_values,
+attention_values_length=eout.attention_values_length,
+attention_keys=eout.outputs,
+attention_fn=attention.AttentionLayerBahdanau(params={}, mode=pmode))
 
 # decoder = attention_decoder.AttentionDecoder(params={}, mode=tf.contrib.learn.ModeKeys.TRAIN,
 # vocab_size=output_vocab_size,
-# attention_values=eout.attention_values,
-# attention_values_length=eout.attention_values_length,
-# attention_keys=eout.outputs,
+# attention_values=summedAttention,
+# attention_values_length=summedLengths,
+# attention_keys=summedOutputs,
 # attention_fn=attention.AttentionLayerBahdanau(params={}, mode=tf.contrib.learn.ModeKeys.TRAIN))
-
-decoder = attention_decoder.AttentionDecoder(params={}, mode=tf.contrib.learn.ModeKeys.TRAIN,
-vocab_size=output_vocab_size,
-attention_values=summedAttention,
-attention_values_length=summedLengths,
-attention_keys=summedOutputs,
-attention_fn=attention.AttentionLayerBahdanau(params={}, mode=tf.contrib.learn.ModeKeys.TRAIN))
 # decoder = basic_decoder.BasicDecoder(params={}, mode=tf.contrib.learn.ModeKeys.TRAIN, vocab_size=output_vocab_size)
 
 
@@ -83,37 +84,39 @@ attention_fn=attention.AttentionLayerBahdanau(params={}, mode=tf.contrib.learn.M
 # decoder_state_size=128,
 # params={},
 # mode=tf.contrib.learn.ModeKeys.TRAIN)
-batch_size = numberArticles
-target_start_id = 0
+batch_size = 4
+target_start_id = 1
 helper_infer = tf_decode_helper.GreedyEmbeddingHelper(
     embedding=output_embeddings,
     start_tokens=tf.fill([batch_size], target_start_id),
-    end_token=0)
-helper_train = tf_decode_helper.TrainingHelper(
-        inputs=decoder_targets_embedded[:, :-1],
-        sequence_length=decoder_targets_length - 1)
+    end_token=5)
+# helper_train = tf_decode_helper.TrainingHelper(
+#         inputs=decoder_targets_embedded[:, :-1],
+#         sequence_length=decoder_targets_length - 1)
 # decoder_initial_state = bridge()
 # print(decoder_initial_state)
 dstate = eout.final_state
 
-# encoder_final_state_c = tf.add(tf.multiply(dstate[0].c, .5), tf.multiply(dstate[1].c, .5))
-# encoder_final_state_h = tf.add(tf.multiply(dstate[0].h, .5), tf.multiply(dstate[1].h, .5))
+encoder_final_state_c = tf.add(tf.multiply(dstate[0].c, .5), tf.multiply(dstate[1].c, .5))
+encoder_final_state_h = tf.add(tf.multiply(dstate[0].h, .5), tf.multiply(dstate[1].h, .5))
 
-summed_encoder_final_state_c = tf.add(tf.multiply(sumUp(dstate[0].c, 4), .5), tf.multiply(sumUp(dstate[1].c, 4), .5))
-summed_encoder_final_state_h = tf.add(tf.multiply(sumUp(dstate[0].h, 4), .5), tf.multiply(sumUp(dstate[1].h, 4), .5))
+# summed_encoder_final_state_c = tf.add(tf.multiply(sumUp(dstate[0].c, 4), .5), tf.multiply(sumUp(dstate[1].c, 4), .5))
+# summed_encoder_final_state_h = tf.add(tf.multiply(sumUp(dstate[0].h, 4), .5), tf.multiply(sumUp(dstate[1].h, 4), .5))
 # encoder_final_state_h = tf.concat(
 #     (dstate[0].h, dstate[1].h), 1)
 #
-# encoder_final_state = LSTMStateTuple(
-#     c=encoder_final_state_c,
-#     h=encoder_final_state_h
-# )
-summed_encoder_final_state = LSTMStateTuple(
-    c=summed_encoder_final_state_c,
-    h=summed_encoder_final_state_h
+encoder_final_state = LSTMStateTuple(
+    c=encoder_final_state_c,
+    h=encoder_final_state_h
 )
+# summed_encoder_final_state = LSTMStateTuple(
+#     c=summed_encoder_final_state_c,
+#     h=summed_encoder_final_state_h
+# )
 # dstate2 = eout2.final_state
-dout, _, = decoder(summed_encoder_final_state, helper_infer)
+# summed_encoder_final_state = tf.Print(summed_encoder_final_state, [1.0, 3.0], message="On to decoding")
+
+dout, _, = decoder(encoder_final_state, helper_infer)
 
 
 sess = tf.Session()
@@ -122,11 +125,11 @@ init_l = tf.local_variables_initializer()
 sess.run(init_op)
 sess.run(init_l)
 
-testArray = [[1,2,3,4,5], [1,2,3,4,5], [1,2,3,4,5], [0,0,0,0,0]]
+testArray = [[0,0,0,0,0], [1,2,3,4,5], [1,2,3,4,5], [1,2,3,4,5]]
 # valArray = [[6,5,4,3,2],[6,5,4,3,2]]
-endArray = [[30,20,10,0,0], [30,20,10,0,0]]
+endArray = [[1,2,3,4,0], [1,2,3,4,0], [1,2,3,4,0], [0,0,0,0,0]]
 
-a,b,c, d = sess.run([dout, summed_encoder_final_state, summedOutputs, eout.outputs], {encoder_inputs: testArray, encoder_inputs_length: [5,5,5,5], decoder_targets: endArray, lengthOfArticles: [2,2], decoder_targets_length:[5,5]})
+d = sess.run(dout, {encoder_inputs: testArray, encoder_inputs_length: [5,5,5,5], lengthOfArticles: [2,2]})
 
 
 # dout = decoder.decode(eout.outputs, encoder_inputs_embedded, decoder_targets)

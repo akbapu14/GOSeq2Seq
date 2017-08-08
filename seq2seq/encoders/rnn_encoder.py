@@ -42,8 +42,7 @@ def _default_rnn_cell_params():
   return {
       "cell_class": "BasicLSTMCell",
       "cell_params": {
-          "num_units": 128,
-          "reuse": None
+          "num_units": 128
       },
       "dropout_input_keep_prob": 1.0,
       "dropout_output_keep_prob": 1.0,
