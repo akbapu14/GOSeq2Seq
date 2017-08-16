@@ -13,10 +13,10 @@ import collections
 from seq2seq.models.model_base import ModelBase, _flatten_dict
 import numpy as np
 #Parameters
-input_vocab_size = 20
-output_vocab_size = 100
-input_embedding_size = 20
-output_embedding_size = 50
+input_vocab_size = 200000
+output_vocab_size = 100000
+input_embedding_size = 500
+output_embedding_size = 500
 numberArticles = 2
 
 
@@ -203,9 +203,9 @@ sess.run(init_l)
 testArray = [[1,2,3,4,5] * 20, [6,7,8,9,10] * 20, [1,2,3,6,5] * 20, [1,2,3,4,5] * 20]
 valArray = [[6,5,4,3,2] * 20,[7,5,4,34,2] * 20]
 # endArray = [[1,2,3,4,0], [1,2,3,4,0], [1,2,3,4,0], [0,0,0,0,0]]
-for i in range(10000):
-    print(sess.run([train_op, predictions], {encoder_inputs: testArray, encoder_inputs_length: [100] * 4, lengthOfArticles: [2,2], decoder_targets: valArray, decoder_targets_length: [100]  * 2}))
-
+#for i in range(10000):
+#    print(sess.run([train_op, predictions], {encoder_inputs: testArray, encoder_inputs_length: [100] * 4, lengthOfArticles: [2,2], decoder_targets: valArray, decoder_targets_length: [100]  * 2}))
+sefs = sess.run([summed_encoder_final_state, summedAttention, summedLengths, summedOutputs], {encoder_inputs: testArray, encoder_inputs_length: [100] * 4, lengthOfArticles: [2,2], decoder_targets: valArray, decoder_targets_length: [100]  * 2})
 
 
 
