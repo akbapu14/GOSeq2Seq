@@ -41,7 +41,7 @@ encoder_inputs = tf.placeholder(shape=(None, None), dtype=tf.int32, name='encode
 encoder_inputs_length = tf.placeholder(shape=(None,), dtype=tf.int32, name='encoder_inputs_length')
 decoder_targets_length = tf.placeholder(shape=(None,), dtype=tf.int32, name='decoder_lengths')
 decoder_targets = tf.placeholder(shape=(None, None), dtype=tf.int32, name='decoder_targets')
-lengthOfArticles= tf.placeholder(shape=(None,), dtype=tf.int32, name='l')
+lengthOfArticles= tf.placeholder(shape=(2,), dtype=tf.int32, name='l')
 
 #Embeddings
 input_embeddings = tf.Variable(tf.random_uniform([input_vocab_size, input_embedding_size], -1.0, 1.0), dtype=tf.float32)
@@ -62,9 +62,35 @@ eout = encoder.encode(encoder_inputs_embedded, encoder_inputs_length)
 #eout.final_state -> encoder_final_state -> LSTMStateTuple[0] = (4,128)
 
 def sumUp(someTensor, numValues):
-    sumOver = tf.add_n([tf.multiply(someTensor[0], 1/float(numValues)), tf.multiply(someTensor[1], 1/float(numValues))])
-    sumOver2 = tf.add_n([tf.multiply(someTensor[0], 1/float(numValues)), tf.multiply(someTensor[1], 1/float(numValues))])
-    return tf.stack([sumOver, sumOver2])
+    #Tensors where first dimension is what you need to concatenate over
+    weightedTensor = tf.multiply(someTensor, 1/float(numValues))
+    weightedTensor.set_shape((4,5,256))
+    mainList = []
+    iterated = 0
+    for somel in tf.unstack(lengthOfArticles):
+        current = iterated + somel
+        chunk = weightedTensor[iterated:current]
+        chunk.set_shape((2,5,256))
+        mainList.append(tf.add_n(tf.unstack(chunk)))
+        iterated += somel
+        # sumOver = tf.add_n([weightedTensor[0], weightedTensor[1]])
+        # sumOver2 = tf.add_n([weightedTensor[2], weightedTensor[3]])
+    return tf.stack(mainList)
+def miniSumUp(someTensor, numValues):
+    #Tensors where first dimension is what you need to concatenate over
+    weightedTensor = tf.multiply(someTensor, 1/float(numValues))
+    weightedTensor.set_shape((4,128))
+    mainList = []
+    iterated = 0
+    for somel in tf.unstack(lengthOfArticles):
+        current = iterated + somel
+        chunk = weightedTensor[iterated:current]
+        chunk.set_shape((2,128))
+        mainList.append(tf.add_n(tf.unstack(chunk)))
+        iterated += somel
+        # sumOver = tf.add_n([weightedTensor[0], weightedTensor[1]])
+        # sumOver2 = tf.add_n([weightedTensor[2], weightedTensor[3]])
+    return tf.stack(mainList)
 def compute_loss(decoder_output, labels, labelLengths):
     """Computes the loss for this model.
 
@@ -158,8 +184,8 @@ dstate = eout.final_state
 # )
 
 
-summed_encoder_final_state_c = tf.add(tf.multiply(sumUp(dstate[0].c, 4), .5), tf.multiply(sumUp(dstate[1].c, 4), .5))
-summed_encoder_final_state_h = tf.add(tf.multiply(sumUp(dstate[0].h, 4), .5), tf.multiply(sumUp(dstate[1].h, 4), .5))
+summed_encoder_final_state_c = tf.add(tf.multiply(miniSumUp(dstate[0].c, 4), .5), tf.multiply(miniSumUp(dstate[1].c, 4), .5))
+summed_encoder_final_state_h = tf.add(tf.multiply(miniSumUp(dstate[0].h, 4), .5), tf.multiply(miniSumUp(dstate[1].h, 4), .5))
 summed_encoder_final_state = LSTMStateTuple(
     c=summed_encoder_final_state_c,
     h=summed_encoder_final_state_h
@@ -168,23 +194,25 @@ summed_encoder_final_state = LSTMStateTuple(
 # summed_encoder_final_state = tf.Print(summed_encoder_final_state, [1.0, 3.0], message="On to decoding")
 
 decoder_output, _, = decoder(summed_encoder_final_state, helper_train)
+#
+# def predict(decoder_output):
+#     predictions = {}
+#     # Decoders returns output in time-major form [T, B, ...]
+#     # Here we transpose everything back to batch-major for the user
+#     output_dict = collections.OrderedDict(
+#         zip(decoder_output._fields, decoder_output))
+#     decoder_output_flat = _flatten_dict(output_dict)
+#     decoder_output_flat = {
+#         k: _transpose_batch_time(v)
+#         for k, v in decoder_output_flat.items()
+#     }
+#     predictions.update(decoder_output_flat)
+#     return predictions
+# predictions = predict(decoder_output)['predicted_ids']
+# losses, loss = compute_loss(decoder_output=decoder_output, labels=decoder_targets, labelLengths=decoder_targets_length)
+# train_op = _build_train_op(loss)
 
-def predict(decoder_output):
-    predictions = {}
-    # Decoders returns output in time-major form [T, B, ...]
-    # Here we transpose everything back to batch-major for the user
-    output_dict = collections.OrderedDict(
-        zip(decoder_output._fields, decoder_output))
-    decoder_output_flat = _flatten_dict(output_dict)
-    decoder_output_flat = {
-        k: _transpose_batch_time(v)
-        for k, v in decoder_output_flat.items()
-    }
-    predictions.update(decoder_output_flat)
-    return predictions
-predictions = predict(decoder_output)['predicted_ids']
-losses, loss = compute_loss(decoder_output=decoder_output, labels=decoder_targets, labelLengths=decoder_targets_length)
-train_op = _build_train_op(loss)
+
 # If we predict the ids also map them back into the vocab and process them
 # if "predicted_ids" in predictions.keys():
 #   vocab_tables = graph_utils.get_dict_from_collection("vocab_tables")
@@ -203,8 +231,8 @@ sess.run(init_l)
 testArray = [[1,2,3,4,5] * 20, [6,7,8,9,10] * 20, [1,2,3,6,5] * 20, [1,2,3,4,5] * 20]
 valArray = [[6,5,4,3,2] * 20,[7,5,4,34,2] * 20]
 # endArray = [[1,2,3,4,0], [1,2,3,4,0], [1,2,3,4,0], [0,0,0,0,0]]
-for i in range(10000):
-    print(sess.run([train_op, predictions], {encoder_inputs: testArray, encoder_inputs_length: [100] * 4, lengthOfArticles: [2,2], decoder_targets: valArray, decoder_targets_length: [100]  * 2}))
+# for i in range(10000):
+f = sess.run([summed_encoder_final_state, summedAttention, summedLengths, summedOutputs], {encoder_inputs: testArray, encoder_inputs_length: [100] * 4, lengthOfArticles: [2,2], decoder_targets: valArray, decoder_targets_length: [100]  * 2})
 
 
 
