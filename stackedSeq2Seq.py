@@ -12,13 +12,18 @@ from seq2seq import losses as seq2seq_losses
 import collections
 from seq2seq.models.model_base import ModelBase, _flatten_dict
 import numpy as np
-#Parameters
-input_vocab_size = 20
-output_vocab_size = 100
-input_embedding_size = 20
-output_embedding_size = 50
-numberArticles = 2
+import time
+import pickle
 
+
+
+
+#Parameters
+input_vocab_size = 96100 + 5
+output_vocab_size = 96582 + 3
+input_embedding_size = 500
+output_embedding_size = 500
+numberArticles = 32
 
 optimizer_params = {
     "optimizer.name": "Adam",
@@ -35,14 +40,17 @@ optimizer_params = {
     "optimizer.sync_replicas": 0,
     "optimizer.sync_replicas_to_aggregate": 0,
 }
+
+#Akilesh's version of tackling articles with multiple sentences by breaking up and summing attention/outputs
+
 #Inputs
 pmode = tf.contrib.learn.ModeKeys.TRAIN
 encoder_inputs = tf.placeholder(shape=(None, None), dtype=tf.int32, name='encoder_inputs')
 encoder_inputs_length = tf.placeholder(shape=(None,), dtype=tf.int32, name='encoder_inputs_length')
 decoder_targets_length = tf.placeholder(shape=(None,), dtype=tf.int32, name='decoder_lengths')
 decoder_targets = tf.placeholder(shape=(None, None), dtype=tf.int32, name='decoder_targets')
-lengthOfArticles= tf.placeholder(shape=(None,), dtype=tf.int32, name='l')
-numPartitions = tf.placeholder(shape=None, dtype=tf.int32)
+articleIndicators= tf.placeholder(shape=(None,), dtype=tf.int32, name='l')
+# numValues = tf.placeholder(tf.float32)
 #Embeddings
 input_embeddings = tf.Variable(tf.random_uniform([input_vocab_size, input_embedding_size], -1.0, 1.0), dtype=tf.float32)
 output_embeddings = tf.Variable(tf.random_uniform([output_vocab_size, output_embedding_size], -1.0, 1.0), dtype=tf.float32)
@@ -54,18 +62,19 @@ decoder_targets_embedded = tf.nn.embedding_lookup(output_embeddings, decoder_tar
 encoder = rnn_encoder.BidirectionalRNNEncoder(params={}, mode=pmode)
 
 eout = encoder.encode(encoder_inputs_embedded, encoder_inputs_length)
-# eout2 = encoder.encode(tf.nn.embedding_lookup(input_embeddings, article_inputs[1]), encoder_inputs_length)
 
 #eout.attention_values = (4,5,256)
 #eout.attention_values_length = [5,5,5,5]
 #eout.outputs = (4,5,256)
 #eout.final_state -> encoder_final_state -> LSTMStateTuple[0] = (4,128)
-
-def sumUp(someTensor, numValues):
+def load_obj(name):
+    with open(name + '.pkl', 'rb') as f:
+        return pickle.load(f)
+def sumUp(someTensor):
     #Tensors where first dimension is what you need to concatenate over
-    weightedTensor = tf.multiply(someTensor, 1/float(numValues))
-    partitioned = tf.dynamic_partition(data=weightedTensor, partitions=lengthOfArticles, num_partitions=2, name="Partition_Data")
-    finalList = [tf.reduce_sum(tensor, axis=0) for tensor in partitioned]
+    # weightedTensor = tf.Print(weightedTensor, tf.divide(1, numValues))
+    partitioned = tf.dynamic_partition(data=someTensor, partitions=articleIndicators, num_partitions=numberArticles, name="Partition_Data")
+    finalList = [tf.reduce_mean(tensor, axis=0) for tensor in partitioned]
     return tf.stack(finalList)
 def compute_loss(decoder_output, labels, labelLengths):
     """Computes the loss for this model.
@@ -121,13 +130,58 @@ def _build_train_op(loss):
 
     return train_op
 
-summedAttention = sumUp(eout.attention_values, 4)
-# finalList, partitioned = sumUp(eout.attention_values, 4)
+def predict(decoder_output):
+    predictions = {}
+    # Decoders returns output in time-major form [T, B, ...]
+    # Here we transpose everything back to batch-major for the user
+    output_dict = collections.OrderedDict(
+        zip(decoder_output._fields, decoder_output))
+    decoder_output_flat = _flatten_dict(output_dict)
+    decoder_output_flat = {
+        k: _transpose_batch_time(v)
+        for k, v in decoder_output_flat.items()
+    }
+    predictions.update(decoder_output_flat)
+    return predictions
 
+def hbatch(inputs, max_sequence_length=None):
+    """
+    Args:
+        inputs:
+            list of sentences (integer lists)
+        max_sequence_length:
+            integer specifying how large should `max_time` dimension be.
+            If None, maximum sequence length would be used
+
+    Outputs:
+        inputs_time_major:
+            input sentences transformed into time-major matrix
+            (shape [max_time, batch_size]) padded with 0s
+        sequence_lengths:
+            batch-sized list of integers specifying amount of active
+            time steps in each input sequence
+    """
+
+    sequence_lengths = [len(seq) for seq in inputs]
+    batch_size = len(inputs)
+
+    if max_sequence_length is None:
+        max_sequence_length = max(sequence_lengths)
+
+    inputs_batch_major = np.zeros(shape=[batch_size, max_sequence_length], dtype=np.int32) # == PAD
+
+    for i, seq in enumerate(inputs):
+        for j, element in enumerate(seq):
+            inputs_batch_major[i, j] = element
+
+    # [batch_size, max_time] -> [max_time, batch_size]
+    inputs_time_major = inputs_batch_major.swapaxes(0, 1)
+
+    return inputs_time_major, sequence_lengths
+
+summedAttention = sumUp(eout.attention_values)
 summedLengths = eout.attention_values_length[:1]
-summedOutputs = sumUp(eout.outputs, 4)
-
-
+summedOutputs = sumUp(eout.outputs)
 
 decoder = attention_decoder.AttentionDecoder(params={}, mode=pmode,
 vocab_size=output_vocab_size,
@@ -147,77 +201,67 @@ helper_train = tf_decode_helper.TrainingHelper(
         sequence_length=decoder_targets_length - 1)
 dstate = eout.final_state
 
-# ***
-# decoder = attention_decoder.AttentionDecoder(params={}, mode=pmode,
-# vocab_size=output_vocab_size,
-# attention_values=eout.attention_values,
-# attention_values_length=eout.attention_values_length,
-# attention_keys=eout.outputs,
-# attention_fn=attention.AttentionLayerBahdanau(params={}, mode=pmode))
-# encoder_final_state_c = tf.add(tf.multiply(dstate[0].c, .5), tf.multiply(dstate[1].c, .5))
-# encoder_final_state_h = tf.add(tf.multiply(dstate[0].h, .5), tf.multiply(dstate[1].h, .5))
-# encoder_final_state = LSTMStateTuple(
-#     c=encoder_final_state_c,
-#     h=encoder_final_state_h
-# )
-
-
-summed_encoder_final_state_c = tf.add(tf.multiply(sumUp(dstate[0].c, 4), .5), tf.multiply(sumUp(dstate[1].c, 4), .5))
-summed_encoder_final_state_h = tf.add(tf.multiply(sumUp(dstate[0].h, 4), .5), tf.multiply(sumUp(dstate[1].h, 4), .5))
+summed_encoder_final_state_c = tf.add(tf.multiply(sumUp(dstate[0].c), .5), tf.multiply(sumUp(dstate[1].c), .5))
+summed_encoder_final_state_h = tf.add(tf.multiply(sumUp(dstate[0].h), .5), tf.multiply(sumUp(dstate[1].h), .5))
 summed_encoder_final_state = LSTMStateTuple(
     c=summed_encoder_final_state_c,
     h=summed_encoder_final_state_h
 )
-# summed_encoder_final_state_c = tf.add(tf.multiply(miniSumUp(dstate[0].c, 4), .5), tf.multiply(miniSumUp(dstate[1].c, 4), .5))
-# summed_encoder_final_state_h = tf.add(tf.multiply(miniSumUp(dstate[0].h, 4), .5), tf.multiply(miniSumUp(dstate[1].h, 4), .5))
-# summed_encoder_final_state = LSTMStateTuple(
-#     c=summed_encoder_final_state_c,
-#     h=summed_encoder_final_state_h
-# )
-
-# summed_encoder_final_state = tf.Print(summed_encoder_final_state, [1.0, 3.0], message="On to decoding")
 
 decoder_output, _, = decoder(summed_encoder_final_state, helper_train)
 #
-def predict(decoder_output):
-    predictions = {}
-    # Decoders returns output in time-major form [T, B, ...]
-    # Here we transpose everything back to batch-major for the user
-    output_dict = collections.OrderedDict(
-        zip(decoder_output._fields, decoder_output))
-    decoder_output_flat = _flatten_dict(output_dict)
-    decoder_output_flat = {
-        k: _transpose_batch_time(v)
-        for k, v in decoder_output_flat.items()
-    }
-    predictions.update(decoder_output_flat)
-    return predictions
+
 predictions = predict(decoder_output)['predicted_ids']
 losses, loss = compute_loss(decoder_output=decoder_output, labels=decoder_targets, labelLengths=decoder_targets_length)
 train_op = _build_train_op(loss)
 
 
-# If we predict the ids also map them back into the vocab and process them
-# if "predicted_ids" in predictions.keys():
-#   vocab_tables = graph_utils.get_dict_from_collection("vocab_tables")
-#   target_id_to_vocab = vocab_tables["target_id_to_vocab"]
-#   predicted_tokens = target_id_to_vocab.lookup(
-#       tf.to_int64(predictions["predicted_ids"]))
-#   # Raw predicted tokens
-#   predictions["predicted_tokens"] = predicted_tokens
-
 sess = tf.Session()
 init_op = tf.global_variables_initializer()
 init_l = tf.local_variables_initializer()
+saver = tf.train.Saver()
 sess.run(init_op)
 sess.run(init_l)
 
-testArray = [[1,2,3,4,5] * 20, [6,7,8,9,10] * 20, [1,2,3,6,5] * 20, [1,2,3,4,5] * 20]
-valArray = [[6,5,4,3,2] * 20,[7,5,4,34,2] * 20]
-# endArray = [[1,2,3,4,0], [1,2,3,4,0], [1,2,3,4,0], [0,0,0,0,0]]
+testArray = [[1,2,3,4,5], [6,7,8,9,10], [1,2,3,6,5], [1,2,3,4,5], [1,2,3,4,5], [6,7,8,9,10], [1,2,3,6,5], [1,2,3,4,5]]
+valArray = [[6,5,4,3,2] * 20,[7,5,4,34,2] * 20, [7,5,4,34,2] * 20, [7,5,4,34,2] * 20,[7,5,4,34,2] * 20]
+test1Array = [[1,2,3,4,5], [6,7,8,9,10], [1,2,3,6,5], [1,2,3,4,5], [1,2,3,4,5], [6,7,8,9,10], [1,2,3,6,5], [1,2,3,4,5], [1,2,3,4,5]]
+endArray = [[6,5,4,3,2] * 20,[7,5,4,34,2] * 20, [7,5,4,34,2] * 20, [7,5,4,34,2] * 20,[7,5,4,34,2] * 20]
+stacked_articles_train = load_obj("stacked_articles_train")
+stacked_annotations_train = load_obj("stacked_annotations_train")
+def getNext():
+    list_of_random_indices = random.sample(list(range(len(stacked_articles_train))), numberArticles)
+    inputs = []
+    targets = []
+    articleIndicators = []
+    for i,index in enumerate(list_of_random_indices):
+        for l in stacked_articles_train[index]:
+            inputs.append(l)
+            articleIndicators.append(i)
+        targets.append(stacked_annotations_train[index])
+    features, features_lengths = hbatch(inputs)
+    labels, labels_lengths = hbatch(targets)
+    # features = [[1,2,3,4,5], [6,7,8,9,10], [1,2,3,6,5], [1,2,3,4,5], [1,2,3,4,5], [6,7,8,9,10], [1,2,3,6,5], [1,2,3,4,5]]
+    # labels = [[6,5,4,3,2] * 20,[7,5,4,34,2] * 20, [7,5,4,34,2] * 20, [7,5,4,34,2] * 20,[7,5,4,34,2] * 20]
+    # features_lengths = [5] * 8
+    # labels_lengths = [100]  * 5
+    # articleIndicators = [0,0,1,1,2,3,4,4]
+
+    return [features, labels, features_lengths, labels_lengths, articleIndicators]
+#Training Cycle
+
 for i in range(10000):
-    print(sess.run([train_op], {numPartitions: 2, encoder_inputs: testArray, encoder_inputs_length: [100] * 4, lengthOfArticles: [0,0,1,1], decoder_targets: valArray, decoder_targets_length: [100]  * 2}))
-# d = sess.run([decoder_output], {numPartitions: 2, encoder_inputs: testArray, encoder_inputs_length: [100] * 4, lengthOfArticles: [0,0,1,1], decoder_targets: valArray, decoder_targets_length: [100]  * 2})
+    start = time.time()
+    # saver.restore(sess, "model.ckpt")
+    # print("Model restored.")
+    inputs = getNext()
+    print(sess.run([train_op], {encoder_inputs: inputs[0], decoder_targets: inputs[1], encoder_inputs_length: inputs[2], decoder_targets_length: inputs[3], articleIndicators: inputs[4]}))
+    # print(sess.run([train_op], {encoder_inputs: test1Array, encoder_inputs_length: [5] * 9, lengthOfArticles: [0,0,1,1,2,3,4,4,3], decoder_targets: endArray, decoder_targets_length: [100]  * 5}))
+
+    print("This batch of 10 took: " + str(time.time() - start) + " seconds")
+    # save_path = saver.save(sess, "model.ckpt")
+    # print("Model saved in file: %s" % save_path)
+# d = sess.run([train_op], {encoder_inputs: testArray, encoder_inputs_length: [5] * 8, lengthOfArticles: [0,0,1,1,2,3,4,4], decoder_targets: valArray, decoder_targets_length: [100]  * 5})
 
 
 
