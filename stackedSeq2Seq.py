@@ -23,7 +23,7 @@ input_vocab_size = 96100 + 5
 output_vocab_size = 96582 + 3
 input_embedding_size = 500
 output_embedding_size = 500
-numberArticles = 32
+numberArticles = 31
 
 optimizer_params = {
     "optimizer.name": "Adam",
@@ -255,6 +255,8 @@ for i in range(10000):
     # saver.restore(sess, "model.ckpt")
     # print("Model restored.")
     inputs = getNext()
+    while len(inputs[4] < 700):
+        inputs = getNext()
     print(sess.run([train_op], {encoder_inputs: inputs[0], decoder_targets: inputs[1], encoder_inputs_length: inputs[2], decoder_targets_length: inputs[3], articleIndicators: inputs[4]}))
     # print(sess.run([train_op], {encoder_inputs: test1Array, encoder_inputs_length: [5] * 9, lengthOfArticles: [0,0,1,1,2,3,4,4,3], decoder_targets: endArray, decoder_targets_length: [100]  * 5}))
 
