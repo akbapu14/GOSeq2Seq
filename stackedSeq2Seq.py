@@ -1,3 +1,4 @@
+import random
 import tensorflow as tf
 from seq2seq.models import bridges
 from seq2seq.encoders import rnn_encoder
@@ -23,7 +24,7 @@ input_vocab_size = 96100 + 5
 output_vocab_size = 96582 + 3
 input_embedding_size = 500
 output_embedding_size = 500
-numberArticles = 32
+numberArticles = 10
 
 optimizer_params = {
     "optimizer.name": "Adam",
@@ -175,9 +176,9 @@ def hbatch(inputs, max_sequence_length=None):
             inputs_batch_major[i, j] = element
 
     # [batch_size, max_time] -> [max_time, batch_size]
-    inputs_time_major = inputs_batch_major.swapaxes(0, 1)
+#    inputs_time_major = inputs_batch_major.swapaxes(0, 1)
 
-    return inputs_time_major, sequence_lengths
+    return inputs_batch_major, sequence_lengths
 
 summedAttention = sumUp(eout.attention_values)
 summedLengths = eout.attention_values_length[:1]
@@ -227,10 +228,11 @@ testArray = [[1,2,3,4,5], [6,7,8,9,10], [1,2,3,6,5], [1,2,3,4,5], [1,2,3,4,5], [
 valArray = [[6,5,4,3,2] * 20,[7,5,4,34,2] * 20, [7,5,4,34,2] * 20, [7,5,4,34,2] * 20,[7,5,4,34,2] * 20]
 test1Array = [[1,2,3,4,5], [6,7,8,9,10], [1,2,3,6,5], [1,2,3,4,5], [1,2,3,4,5], [6,7,8,9,10], [1,2,3,6,5], [1,2,3,4,5], [1,2,3,4,5]]
 endArray = [[6,5,4,3,2] * 20,[7,5,4,34,2] * 20, [7,5,4,34,2] * 20, [7,5,4,34,2] * 20,[7,5,4,34,2] * 20]
-stacked_articles_train = load_obj("stacked_articles_train")
-stacked_annotations_train = load_obj("stacked_annotations_train")
+stacked_articles_train = load_obj("../stacked_articles_train")
+stacked_annotations_train = load_obj("../stacked_annotations_train")
 def getNext():
     list_of_random_indices = random.sample(list(range(len(stacked_articles_train))), numberArticles)
+    print(list_of_random_indices)
     inputs = []
     targets = []
     articleIndicators = []
@@ -254,7 +256,10 @@ for i in range(10000):
     start = time.time()
     # saver.restore(sess, "model.ckpt")
     # print("Model restored.")
+    
     inputs = getNext()
+    while len(inputs[4]) < 750:
+        inputs = getNext()
     print(sess.run([train_op], {encoder_inputs: inputs[0], decoder_targets: inputs[1], encoder_inputs_length: inputs[2], decoder_targets_length: inputs[3], articleIndicators: inputs[4]}))
     # print(sess.run([train_op], {encoder_inputs: test1Array, encoder_inputs_length: [5] * 9, lengthOfArticles: [0,0,1,1,2,3,4,4,3], decoder_targets: endArray, decoder_targets_length: [100]  * 5}))
 
