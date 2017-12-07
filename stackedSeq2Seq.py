@@ -15,17 +15,21 @@ from seq2seq.models.model_base import ModelBase, _flatten_dict
 import numpy as np
 import time
 import pickle
-
+import math
+import resource
+import datetime
+import tqdm
 
 
 
 #Parameters
-input_vocab_size = 96100 + 5
-output_vocab_size = 96582 + 3
+# input_vocab_size = 96100 + 5
+# input_vocab_size = 96582 + 3
+input_vocab_size = 143020 + 5
 input_embedding_size = 500
 output_embedding_size = 500
-numberArticles = 10
-
+numberArticles = 5
+sameVocab = True
 optimizer_params = {
     "optimizer.name": "Adam",
     "optimizer.learning_rate": 1e-4,
@@ -41,7 +45,10 @@ optimizer_params = {
     "optimizer.sync_replicas": 0,
     "optimizer.sync_replicas_to_aggregate": 0,
 }
-
+trainingArticles = "stacked_blended_articles_train"
+trainingAnnotations = "stacked_blended_annotations_train"
+devArticles = "stacked_blended_articles_dev"
+devAnnotations = "stacked_blended_annotations_dev"
 #Akilesh's version of tackling articles with multiple sentences by breaking up and summing attention/outputs
 
 #Inputs
@@ -53,12 +60,18 @@ decoder_targets = tf.placeholder(shape=(None, None), dtype=tf.int32, name='decod
 articleIndicators= tf.placeholder(shape=(None,), dtype=tf.int32, name='l')
 # numValues = tf.placeholder(tf.float32)
 #Embeddings
-input_embeddings = tf.Variable(tf.random_uniform([input_vocab_size, input_embedding_size], -1.0, 1.0), dtype=tf.float32)
-output_embeddings = tf.Variable(tf.random_uniform([output_vocab_size, output_embedding_size], -1.0, 1.0), dtype=tf.float32)
 
+if not sameVocab:
+    output_embeddings = tf.Variable(tf.random_uniform([output_vocab_size, output_embedding_size], -1.0, 1.0), dtype=tf.float32)
+    input_embeddings = tf.Variable(tf.random_uniform([input_vocab_size, input_embedding_size], -1.0, 1.0), dtype=tf.float32)
+else:
+    input_embeddings = tf.Variable(tf.random_uniform([input_vocab_size, input_embedding_size], -1.0, 1.0), dtype=tf.float32)
 #Network
 encoder_inputs_embedded = tf.nn.embedding_lookup(input_embeddings, encoder_inputs, name="input_embedding_vector")
-decoder_targets_embedded = tf.nn.embedding_lookup(output_embeddings, decoder_targets, name="decoder_embedding_vector")
+if not sameVocab:
+    decoder_targets_embedded = tf.nn.embedding_lookup(output_embeddings, decoder_targets, name="decoder_embedding_vector")
+else:
+    decoder_targets_embedded = tf.nn.embedding_lookup(input_embeddings, decoder_targets, name="decoder_embedding_vector")
 
 encoder = rnn_encoder.BidirectionalRNNEncoder(params={}, mode=pmode)
 
@@ -86,7 +99,7 @@ def compute_loss(decoder_output, labels, labelLengths):
     #pylint: disable=R0201
     # Calculate loss per example-timestep of shape [B, T]
     losses = seq2seq_losses.cross_entropy_sequence_loss(
-        logits=decoder_output.logits[:, :, :],
+        logits=decoder_output.logits,
         targets=tf.transpose(labels[:, 1:], [1, 0]),
         sequence_length=labelLengths - 1)
 
@@ -184,12 +197,20 @@ summedAttention = sumUp(eout.attention_values)
 summedLengths = eout.attention_values_length[:1]
 summedOutputs = sumUp(eout.outputs)
 
-decoder = attention_decoder.AttentionDecoder(params={}, mode=pmode,
-vocab_size=output_vocab_size,
-attention_values=summedAttention,
-attention_values_length=summedLengths,
-attention_keys=summedOutputs,
-attention_fn=attention.AttentionLayerBahdanau(params={}, mode=pmode))
+if not sameVocab:
+    decoder = attention_decoder.AttentionDecoder(params={}, mode=pmode,
+    vocab_size=output_vocab_size,
+    attention_values=summedAttention,
+    attention_values_length=summedLengths,
+    attention_keys=summedOutputs,
+    attention_fn=attention.AttentionLayerBahdanau(params={}, mode=pmode))
+else:
+    decoder = attention_decoder.AttentionDecoder(params={}, mode=pmode,
+    vocab_size=input_vocab_size,
+    attention_values=summedAttention,
+    attention_values_length=summedLengths,
+    attention_keys=summedOutputs,
+    attention_fn=attention.AttentionLayerBahdanau(params={}, mode=pmode))
 
 batch_size = 2
 target_start_id = 1
@@ -220,7 +241,7 @@ train_op = _build_train_op(loss)
 sess = tf.Session()
 init_op = tf.global_variables_initializer()
 init_l = tf.local_variables_initializer()
-saver = tf.train.Saver()
+saver = tf.train.Saver(max_to_keep=None)
 sess.run(init_op)
 sess.run(init_l)
 
@@ -228,11 +249,12 @@ testArray = [[1,2,3,4,5], [6,7,8,9,10], [1,2,3,6,5], [1,2,3,4,5], [1,2,3,4,5], [
 valArray = [[6,5,4,3,2] * 20,[7,5,4,34,2] * 20, [7,5,4,34,2] * 20, [7,5,4,34,2] * 20,[7,5,4,34,2] * 20]
 test1Array = [[1,2,3,4,5], [6,7,8,9,10], [1,2,3,6,5], [1,2,3,4,5], [1,2,3,4,5], [6,7,8,9,10], [1,2,3,6,5], [1,2,3,4,5], [1,2,3,4,5]]
 endArray = [[6,5,4,3,2] * 20,[7,5,4,34,2] * 20, [7,5,4,34,2] * 20, [7,5,4,34,2] * 20,[7,5,4,34,2] * 20]
-stacked_articles_train = load_obj("../stacked_articles_train")
-stacked_annotations_train = load_obj("../stacked_annotations_train")
+stacked_articles_train = load_obj(trainingArticles)
+stacked_annotations_train = load_obj(trainingAnnotations)
+stacked_articles_dev = load_obj(devArticles)
+stacked_annotations_dev = load_obj(devAnnotations)
 def getNext():
     list_of_random_indices = random.sample(list(range(len(stacked_articles_train))), numberArticles)
-    print(list_of_random_indices)
     inputs = []
     targets = []
     articleIndicators = []
@@ -243,29 +265,77 @@ def getNext():
         targets.append(stacked_annotations_train[index])
     features, features_lengths = hbatch(inputs)
     labels, labels_lengths = hbatch(targets)
-    # features = [[1,2,3,4,5], [6,7,8,9,10], [1,2,3,6,5], [1,2,3,4,5], [1,2,3,4,5], [6,7,8,9,10], [1,2,3,6,5], [1,2,3,4,5]]
+    ##
+    # features = [[1,2,3,4,5], [6,7,8,9,10], [1,2,3,6,5], [1,2,3,4,5], [1,2,3,4,5]]
     # labels = [[6,5,4,3,2] * 20,[7,5,4,34,2] * 20, [7,5,4,34,2] * 20, [7,5,4,34,2] * 20,[7,5,4,34,2] * 20]
-    # features_lengths = [5] * 8
+    # features_lengths = [5] * 5
     # labels_lengths = [100]  * 5
-    # articleIndicators = [0,0,1,1,2,3,4,4]
-
+    # articleIndicators = [0,1,2,3,4]
     return [features, labels, features_lengths, labels_lengths, articleIndicators]
+def getInputsFromIndices(indices):
+    inputs = []
+    targets = []
+    articleIndicators = []
+    for i,index in enumerate(indices):
+        for l in stacked_articles_dev[index]:
+            inputs.append(l)
+            articleIndicators.append(i)
+        targets.append(stacked_annotations_dev[index])
+    features, features_lengths = hbatch(inputs)
+    labels, labels_lengths = hbatch(targets)
+    return [features, labels, features_lengths, labels_lengths, articleIndicators]
+saver.restore(sess, "/var/tmp/akilesh/run2/model0.ckpt43200")
+print("Model restored.")
 #Training Cycle
+result = None
 
-for i in range(10000):
+vL = open("validationLosses2.txt", "a")
+vL.write("Validation Losses for new run on " + str(datetime.date.today()) + "\n")
+vL.close()
+vL = open("trainingLosses2.txt", "a")
+vL.write("Training Losses for new run on " + str(datetime.date.today()) + "\n")
+vL.close()
+
+for i in range(1000000):
     start = time.time()
-    # saver.restore(sess, "model.ckpt")
-    # print("Model restored.")
+
     
     inputs = getNext()
-    while len(inputs[4]) < 750:
-        inputs = getNext()
-    print(sess.run([train_op], {encoder_inputs: inputs[0], decoder_targets: inputs[1], encoder_inputs_length: inputs[2], decoder_targets_length: inputs[3], articleIndicators: inputs[4]}))
+    # while len(inputs[4]) > 750:
+    #     inputs = getNext()
+    # previous = result
+    # a = [n.name for n in tf.get_default_graph().as_graph_def().node]
+    # print(len(a))
+    print("{} Kb".format(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
+    result = sess.run(train_op, {encoder_inputs: inputs[0], decoder_targets: inputs[1], encoder_inputs_length: inputs[2], decoder_targets_length: inputs[3], articleIndicators: inputs[4]})
+    print(result)
+
+    vL = open("trainingLosses.txt", "a")
+    vL.write(str(result) + "\n")
+    vL.close()    
+
     # print(sess.run([train_op], {encoder_inputs: test1Array, encoder_inputs_length: [5] * 9, lengthOfArticles: [0,0,1,1,2,3,4,4,3], decoder_targets: endArray, decoder_targets_length: [100]  * 5}))
 
     print("This batch of 10 took: " + str(time.time() - start) + " seconds")
-    # save_path = saver.save(sess, "model.ckpt")
-    # print("Model saved in file: %s" % save_path)
+    if i%200 == 0:
+        if i%1000 == 0:  
+            save_path = saver.save(sess, "/var/tmp/akilesh/run2/model0.ckpt" + str(i + 43200))
+            print("Model saved in file: %s" % save_path)
+        #Calculate validation accuracy
+        count = 0
+        losses = []
+        pbar = tqdm.tqdm(total=len(stacked_annotations_dev)/numberArticles)
+        while count + numberArticles < len(stacked_annotations_dev):
+            count = count + numberArticles
+            inputs = getInputsFromIndices(list(range(count - numberArticles, count)))
+            outputL = sess.run(loss, {encoder_inputs: inputs[0], decoder_targets: inputs[1], encoder_inputs_length: inputs[2], decoder_targets_length: inputs[3], articleIndicators: inputs[4]})
+            losses.append(outputL)
+            pbar.update(1)
+        avgLoss = sum(losses) / len(losses)
+        print("VALIDATION LOSS: " + str(avgLoss))
+        vL = open("validationLosses.txt", "a")
+        vL.write(str(avgLoss) + "\n")
+        vL.close()
 # d = sess.run([train_op], {encoder_inputs: testArray, encoder_inputs_length: [5] * 8, lengthOfArticles: [0,0,1,1,2,3,4,4], decoder_targets: valArray, decoder_targets_length: [100]  * 5})
 
 
